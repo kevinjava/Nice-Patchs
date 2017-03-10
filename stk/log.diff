@@ -1,0 +1,159 @@
+diff --git a/src/java/com/android/internal/telephony/cat/CatCmdMessage.java b/src/java/com/android/internal/telephony/cat/CatCmdMessage.java
+index e99473c..7b55198 100644
+--- a/src/java/com/android/internal/telephony/cat/CatCmdMessage.java
++++ b/src/java/com/android/internal/telephony/cat/CatCmdMessage.java
+@@ -19,6 +19,8 @@ package com.android.internal.telephony.cat;
+ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
++import java.util.Arrays;
++
+ /**
+  * Class used to pass CAT messages from telephony to application. Application
+  * should call getXXX() to get commands's specific values.
+@@ -47,6 +49,14 @@ public class CatCmdMessage implements Parcelable {
+     public class BrowserSettings {
+         public String url;
+         public LaunchBrowserMode mode;
++
++        @Override
++        public String toString() {
++            StringBuffer sb = new StringBuffer();
++            sb.append("url : " + url);
++            sb.append("\n mode: " + mode);
++            return sb.toString();
++        }
+     }
+ 
+     /*
+@@ -55,10 +65,23 @@ public class CatCmdMessage implements Parcelable {
+     public class CallSettings {
+         public TextMessage confirmMsg;
+         public TextMessage callMsg;
++        @Override
++        public String toString() {
++            StringBuffer sb = new StringBuffer();
++            sb.append("confirmMsg : " + (confirmMsg != null ? confirmMsg.toString() : ""));
++            sb.append("\n callMsg: " + (callMsg != null ? callMsg.toString() : ""));
++            return sb.toString();
++        }
+     }
+ 
+     public class SetupEventListSettings {
+         public int[] eventList;
++        @Override
++        public String toString() {
++            StringBuffer sb = new StringBuffer();
++            sb.append("eventList : " + (eventList != null ? Arrays.toString(eventList) : ""));
++            return sb.toString();
++        }
+     }
+ 
+     public final class SetupEventListConstants {
+@@ -262,4 +285,40 @@ public class CatCmdMessage implements Parcelable {
+             return false;
+         }
+     }
++
++    @Override
++    public String toString() {
++        StringBuffer sb = new StringBuffer();
++        sb.append("TextMessage : + \n");
++        if(mTextMsg != null) {
++            sb.append(mTextMsg.toString());
++        }
++
++        sb.append("\n Menu : ");
++        if(mMenu != null) {
++            sb.append(mMenu.toString());
++        }
++
++        sb.append("\n mInput : ");
++        if(mInput != null) {
++            sb.append(mInput.toString());
++        }
++
++        sb.append("\n mBrowserSettings : ");
++        if(mBrowserSettings != null) {
++            sb.append(mBrowserSettings.toString());
++        }
++
++        sb.append("\n mCallSettings : ");
++        if(mCallSettings != null) {
++            sb.append(mCallSettings.toString());
++        }
++
++        sb.append("\n mSetupEventListSettings : ");
++        if(mSetupEventListSettings != null) {
++            sb.append(mSetupEventListSettings.toString());
++        }
++
++        return sb.toString();
++    }
+ }
+diff --git a/src/java/com/android/internal/telephony/cat/Input.java b/src/java/com/android/internal/telephony/cat/Input.java
+index 48705d1..31628ce 100644
+--- a/src/java/com/android/internal/telephony/cat/Input.java
++++ b/src/java/com/android/internal/telephony/cat/Input.java
+@@ -102,4 +102,22 @@ public class Input implements Parcelable {
+     };
+ 
+     boolean setIcon(Bitmap Icon) { return true; }
++
++    @Override
++    public String toString() {
++        StringBuffer sb = new StringBuffer();
++        sb.append("text : " + text);
++        sb.append("\n defaultText : " + defaultText);
++        sb.append("\n icon : " + icon);
++        sb.append("\n minLen : " + minLen);
++        sb.append("\n maxLen : " + minLen);
++        sb.append("\n ucs2 : " + ucs2);
++        sb.append("\n packed : " + packed);
++        sb.append("\n digitOnly : " + digitOnly);
++        sb.append("\n echo : " + echo);
++        sb.append("\n yesNo : " + yesNo);
++        sb.append("\n helpAvailable : " + helpAvailable);
++        sb.append("\n duration : " + duration);
++        return sb.toString();
++    }
+ }
+\ No newline at end of file
+diff --git a/src/java/com/android/internal/telephony/cat/Item.java b/src/java/com/android/internal/telephony/cat/Item.java
+index 456a46f..f297990 100644
+--- a/src/java/com/android/internal/telephony/cat/Item.java
++++ b/src/java/com/android/internal/telephony/cat/Item.java
+@@ -75,6 +75,6 @@ public class Item implements Parcelable {
+ 
+     @Override
+     public String toString() {
+-        return text;
++        return "id : " + id + ", text: " + text;
+     }
+ }
+diff --git a/src/java/com/android/internal/telephony/cat/Menu.java b/src/java/com/android/internal/telephony/cat/Menu.java
+index a3cbbdf..14f57a9 100644
+--- a/src/java/com/android/internal/telephony/cat/Menu.java
++++ b/src/java/com/android/internal/telephony/cat/Menu.java
+@@ -106,4 +106,21 @@ public class Menu implements Parcelable {
+             return new Menu[size];
+         }
+     };
++
++    @Override
++    public String toString() {
++        StringBuffer sb = new StringBuffer();
++        sb.append("title: " + title).append("\n titleIcon" + titleIcon);
++        int size = items.size();
++        sb.append("\n items: ");
++        for (int i=0; i<size; i++) {
++            sb.append(items.get(i).toString());
++        }
++        sb.append("\n defaultItem:" + defaultItem);
++        sb.append("\n softKeyPreferred: " + softKeyPreferred);
++        sb.append("\n helpAvailable: " + helpAvailable);
++        sb.append("\n titleIconSelfExplanatory: " + titleIconSelfExplanatory);
++        sb.append("\n itemsIconSelfExplanatory:" + itemsIconSelfExplanatory);
++        return sb.toString();
++    }
+ }
