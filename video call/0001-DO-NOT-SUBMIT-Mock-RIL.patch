@@ -1,0 +1,1804 @@
+From 6f8f3026ffda19f211c6b69aebb521f55a0c0162 Mon Sep 17 00:00:00 2001
+From: Imazeki Koichiro <koichiro.x.imazeki@sonymobile.com>
+Date: Fri, 12 Sep 2014 22:05:53 +0900
+Subject: [PATCH] DO NOT SUBMIT : Mock RIL
+
+Provides Mock RIL to simulate telephony functions.
+
+Change-Id: I9786ee8da3dc160d43624b1ab698b7ed864aa0c8
+(cherry picked from commit 1bd667ef05f5b34d00d0f9ae496a89cb0f3ee706)
+---
+ .../com/android/internal/telephony/MockRIL.java    | 1695 ++++++++++++++++++++
+ .../android/internal/telephony/PhoneFactory.java   |   17 +-
+ src/java/com/android/internal/telephony/RIL.java   |   10 +-
+ 3 files changed, 1714 insertions(+), 8 deletions(-)
+ create mode 100644 src/java/com/android/internal/telephony/MockRIL.java
+
+diff --git a/src/java/com/android/internal/telephony/MockRIL.java b/src/java/com/android/internal/telephony/MockRIL.java
+new file mode 100644
+index 0000000..0d14f85
+--- /dev/null
++++ b/src/java/com/android/internal/telephony/MockRIL.java
+@@ -0,0 +1,1695 @@
++/*
++ * MockRIL
++ */
++
++package com.android.internal.telephony;
++
++import static com.android.internal.telephony.RILConstants.*;
++import com.android.internal.telephony.uicc.IccConstants;
++
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
++import android.content.SharedPreferences;
++import android.content.SharedPreferences.Editor;
++import android.os.AsyncResult;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.Looper;
++import android.os.Message;
++import android.os.Parcel;
++import android.preference.PreferenceManager;
++import android.telephony.Rlog;
++import android.telephony.SignalStrength;
++import android.telephony.TelephonyManager;
++import android.text.TextUtils;
++import android.widget.Toast;
++
++import com.android.internal.telephony.uicc.IccUtils;
++
++import java.util.Timer;
++import java.util.TimerTask;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++public class MockRIL extends RIL {
++
++    static final String LOG_TAG = "MockRIL";
++
++    // Intents for Test commands
++    private static final String ACTION_NETWORK_STATE_CHANGED =
++            "com.telephony.mockril.intent.action.NETWORK_STATE_CHANGED";
++
++    private static final String ACTION_OUT_OF_SERVICE =
++            "com.telephony.mockril.intent.action.OUT_OF_SERVICE";
++
++    private static final String ACTION_CALL_STATE_CHANGED =
++            "com.telephony.mockril.intent.action.CALL_STATE_CHANGED";
++
++    private static final String ACTION_IMSI_CHANGED =
++            "com.telephony.mockril.intent.action.IMSI_CHANGED";
++
++    private static final String ACTION_SUPP_SERVICE_NOTIFICATION =
++            "com.telephony.mockril.intent.action.SUPP_SERVICE_NOTIFICATION";
++
++    private static final String ACTION_ICC_STATE_CHANGED =
++            "com.telephony.mockril.intent.action.ICC_STATE_CHANGED";
++
++    // Extra data
++    private static final String EXTRA_OPERATOR = "opname";
++    private static final String EXTRA_MCC = "mcc";
++    private static final String EXTRA_MNC = "mnc";
++
++    private static final String EXTRA_VOICE_REG_STATE = "voiceregstate";
++    private static final String EXTRA_VOICE_RAT = "voicerat";
++    private static final String EXTRA_SID = "sid";
++    private static final String EXTRA_NID = "nid";
++    private static final String EXTRA_ROAM_IND = "roamind";
++
++    private static final String EXTRA_DATA_REG_STATE = "dataregstate";
++    private static final String EXTRA_DATA_RAT = "datarat";
++
++    private static final String EXTRA_IMS_REG_STATE = "imsregstate";
++    private static final String EXTRA_IMS_REG_RAT = "imsregrat";
++
++    private static final String EXTRA_CALL_COMMAND = "callcommand";
++    private static final String EXTRA_CALL_FAIL_CAUSE = "failcause";
++    private static final String EXTRA_CALL_INCOMING_NUMBER = "incomingnumber";
++    private static final String EXTRA_CALL_NUMBER_PRESENTATION = "numpresentation";
++    private static final String EXTRA_CALL_INCOMING_NAME = "incomingname";
++    private static final String EXTRA_CALL_NAME_PRESENTATION = "namepresentation";
++
++    private static final String EXTRA_SIM_MCC = "simmcc";
++    private static final String EXTRA_SIM_MNC = "simmnc";
++
++    private static final String EXTRA_SUPP_NOTIFICATION_TYPE = "supptype";
++    private static final String EXTRA_SUPP_CODE = "suppcode";
++
++    private static final String EXTRA_HAS_ICC = "hasicc";
++    private static final String EXTRA_HAS_CSIM = "hascsim";
++    private static final String EXTRA_HAS_ISIM = "hasisim";
++
++    private static final String EXTRA_SIM_ID = "simid";
++
++    // CALL commands
++    private static final String CALL_COMMAND_ACCEPT_OR_INCOMING = "ACCEPT_OR_INCOMING";
++    private static final String CALL_COMMAND_ENDCALL = "ENDCALL";
++
++    // AIDs
++    private static final String USIM_AID = "a0000000871002ff81ffff89060200ff";
++    private static final String CSIM_AID = "a0000003431002ff81ffff89060200ff";
++    private static final String ISIM_AID = "a0000000871004ff81ffff89060200ff";
++
++    // Copy from IccFileHandler
++    private static final int COMMAND_READ_BINARY = 0xb0;
++    private static final int COMMAND_UPDATE_BINARY = 0xd6;
++    private static final int COMMAND_READ_RECORD = 0xb2;
++    private static final int COMMAND_UPDATE_RECORD = 0xdc;
++    private static final int COMMAND_SEEK = 0xa2;
++    private static final int COMMAND_GET_RESPONSE = 0xc0;
++
++    // For Verizon
++    private static final int EF_HPLMN_WACT = 0x6f62;
++    private static final int EF_CSIM_SF_EUIMID = 0x6F74;
++
++    private static final String MDN = "123456789";
++
++    // Preference keys for ICC.
++    private static final String KEY_USIM_MCC = "mock_usim_mcc";
++    private static final String KEY_USIM_MNC = "mock_usim_mnc";
++    private static final String KEY_USIM_AD = "mock_usim_ad";
++    private static final String KEY_HAS_ICC = "mock_has_icc";
++    private static final String KEY_HAS_CSIM = "mock_has_csim";
++    private static final String KEY_HAS_ISIM = "mock_has_isim";
++
++    // Unsolicited/Solicited Response Events
++    private static final int EVENT_SEND_SOL_RESPONSE = 100;
++    private static final int EVENT_SEND_UNSOL_RESPONSE = 101;
++
++    private static final int MAX_CALL_COUNTS = 7;
++
++    private Integer mRilId;
++
++    // RIL_REQUEST_OPERATOR
++    private String[] mOperator = new String[] {null,null,null};
++
++    // RIL_REQUEST_VOICE_REGISTRATION_STATE
++    private String[] mVoiceRegState = new String[] {
++            "2",null,null,"0",null,null,null,null,null,null,null,null,null,"0",null};
++
++    // RIL_REQUEST_DATA_REGISTRATION_STATE
++    private String[] mDataRegState = new String[] {
++            "2",null,null,"0",null,null,null,null,null,null,null};
++
++    // RIL_REQUEST_IMS_REGISTRATION_STATE
++    private int mImsRegState = 0;  // 0: Not registered / 1: Registered
++    private int mImsRatFamily = 1; // 1:3GPP / 2:3GPP2
++
++    // RIL_REQUEST_GET_CURRENT_CALLS
++    private int mNumOfCalls = 0;
++    private int mLastCallFailCause = 16;
++    private Call[] mCalls = new Call[MAX_CALL_COUNTS];
++
++    private TelephonyManager mTelMgr;
++    private Timer mTimerAlerting = new Timer();
++    private Timer mTimerCallStateChanged = new Timer();
++    private HandlerThread mSenderThread;
++    private MockRILSender mSender;
++
++    private class Call {
++        int mCallIndex;
++        String mNumber;
++        String mName;
++        DriverCall.State mState = null;
++        int mToa = 129;
++        int mIsMT = 0;
++        int mMpty = 0;
++        int mVoicePrivacy = 0;
++        int mNumPresentation = 0;
++        int mNamePresentation = 0;
++        boolean mIsActive;
++    }
++
++    // RIL_REQUEST_SIGNAL_STRENGTH
++    private int mGsmSignalStrength = 99;
++    private int mGsmBitErrorRate = 0;
++    private int mUmtsRscp = 0x7FFFFFFF;
++    private int mCdmaDbm = -1;
++    private int mCdmaEcio = -1;
++    private int mEvdoDbm = -1;
++    private int mEvdoEcio = -1;
++    private int mEvdoSnr = -1;
++    private int mLteSignalStrength = 99;
++    private int mLteRsrp = 0x7FFFFFFF;
++    private int mLteRsrq = 0x7FFFFFFF;
++    private int mLteRssnr = 0x7FFFFFFF;
++    private int mLteCqi = 0x7FFFFFFF;
++
++    // SIM
++    private String mSimMcc = "001";
++    private String mSimMnc = "01";
++    private String mSimAd = "00000002";
++    private boolean mHasIcc = true;
++    private boolean mHasCsim = true;
++    private boolean mHasIsim = true;
++    private int mNumApps = 3;
++    private boolean mIsSimRemoved;
++
++    // Supplementary Service Notification
++    private int mSuppNotificationType = 0;
++    private int mSuppCode = 0;
++    private int mSuppIndex = 0;
++    private int mSuppType = 0;
++    private String mSuppNumber;
++
++
++    private BroadcastReceiver mTestCommandReceiver = new BroadcastReceiver() {
++        @Override
++        public void onReceive(Context context, Intent intent) {
++            String simId = intent.getStringExtra(EXTRA_SIM_ID);
++            if (TextUtils.isEmpty(simId)) {
++                simId = "0";
++            }
++            if (mRilId.intValue() != Integer.parseInt(simId)) {
++                Rlog.d(LOG_TAG, "Command has been ignored. Instance ID:" + mRilId.intValue()
++                        + " SIM ID:" + simId);
++                return;
++            }
++
++            if (intent.getAction().equals(ACTION_NETWORK_STATE_CHANGED)) {
++                processNetworkStateChanged(context, intent);
++            } else if (intent.getAction().equals(ACTION_OUT_OF_SERVICE)) {
++                processOutOfService();
++            } else if (intent.getAction().equals(ACTION_CALL_STATE_CHANGED)) {
++                processCallStateChanged(context, intent);
++            } else if (intent.getAction().equals(ACTION_IMSI_CHANGED)) {
++                processImsiChanged(context, intent);
++            } else if (intent.getAction().equals(ACTION_SUPP_SERVICE_NOTIFICATION)) {
++                processSuppSrvNotification(intent);
++            } else if (intent.getAction().equals(ACTION_ICC_STATE_CHANGED)) {
++                processIccStateChanged(context, intent);
++            }
++        }
++    };
++
++    class MockRILSender extends Handler implements Runnable {
++        public MockRILSender(Looper looper) {
++            super(looper);
++        }
++
++        //***** Runnable implementation
++        @Override
++        public void
++        run() {
++            //setup if needed
++        }
++
++        //***** Handler implementation
++        @Override public void
++        handleMessage(Message msg) {
++
++            try {
++                Thread.sleep(250);
++            } catch (InterruptedException e) {
++                // do nothing.
++            }
++
++            switch (msg.what) {
++            case EVENT_SEND_SOL_RESPONSE:
++                RILRequest rr = (RILRequest) (msg.obj);
++                Rlog.d(LOG_TAG, "EVENT_SEND_SOL_RESPONSE: " + requestToString(rr.mRequest));
++                sendSolicitedResponse(rr);
++                break;
++            case EVENT_SEND_UNSOL_RESPONSE:
++                int event = (int) (msg.arg1);
++                Rlog.d(LOG_TAG, "EVENT_SEND_UNSOL_RESPONSE: " + responseToString(event));
++                sendUnsolicitedResponse(event, msg.obj);
++                break;
++            }
++        }
++    }
++
++    @Override
++    protected Object responseSignalStrength(Parcel p) {
++        int voiceRat = Integer.parseInt(mVoiceRegState[3]);
++        int dataRat = Integer.parseInt(mDataRegState[3]);
++
++        boolean isGsm = ((voiceRat == 1) || (voiceRat == 2) || (voiceRat == 3) ||
++                (voiceRat == 9) || (voiceRat == 10) || (voiceRat == 11) ||
++                (voiceRat == 14) ||
++                (dataRat == 1) || (dataRat == 2) || (dataRat == 3) ||
++                (dataRat == 9) || (dataRat == 10) || (dataRat == 11) ||
++                (dataRat == 14));
++
++        SignalStrength signalStrength = new SignalStrength();
++        // Depends on FP18451 Customization of the display of UMTS signal strength
++        // Added new param by CR403258,479310 since M.
++        signalStrength.initialize(mGsmSignalStrength, mGsmBitErrorRate, /*DMS05375009 mUmtsRscp,*/mCdmaDbm,
++                mCdmaEcio, mEvdoDbm, mEvdoEcio, mEvdoSnr, isGsm);
++
++        return signalStrength;
++    }
++
++    public MockRIL(Context context, int preferredNetworkType,
++            int cdmaSubscription, Integer instanceId) {
++        super(context, preferredNetworkType, cdmaSubscription, instanceId);
++
++        mRilId = instanceId;
++        Rlog.d(LOG_TAG, "Instance ID :" + mRilId);
++
++        registerReceiver(context);
++
++        mTelMgr = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
++
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            mCalls[i] = new Call();
++            mCalls[i].mCallIndex = i+1;
++        }
++
++        mSenderThread = new HandlerThread("MockRILSender");
++        mSenderThread.start();
++
++        Looper looper = mSenderThread.getLooper();
++        mSender = new MockRILSender(looper);
++
++        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
++        mSimMcc = sp.getString(KEY_USIM_MCC, "001");
++        mSimMnc = sp.getString(KEY_USIM_MNC, "01");
++        mSimAd = sp.getString(KEY_USIM_AD, "00000002");
++
++        mHasIcc = sp.getBoolean(KEY_HAS_ICC, true);
++
++        if (mHasIcc) {
++            mNumApps = 1;
++            mHasCsim = sp.getBoolean(KEY_HAS_CSIM, true);
++            mHasIsim = sp.getBoolean(KEY_HAS_ISIM, true);
++            if (mHasCsim) mNumApps++;
++            if (mHasIsim) mNumApps++;
++        }
++    }
++
++    private void registerReceiver(Context c) {
++        IntentFilter filter = new IntentFilter();
++        filter.addAction(ACTION_NETWORK_STATE_CHANGED);
++        filter.addAction(ACTION_OUT_OF_SERVICE);
++        filter.addAction(ACTION_CALL_STATE_CHANGED);
++        filter.addAction(ACTION_IMSI_CHANGED);
++        filter.addAction(ACTION_SUPP_SERVICE_NOTIFICATION);
++        filter.addAction(ACTION_ICC_STATE_CHANGED);
++
++        c.registerReceiver(mTestCommandReceiver, filter);
++    }
++
++    private void processNetworkStateChanged(Context context, Intent intent) {
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_NETWORK_STATE_CHANGED");
++
++        // For RIL_REQUEST_OPERATOR
++        String opName = intent.getStringExtra(EXTRA_OPERATOR);
++        String mcc = intent.getStringExtra(EXTRA_MCC);
++        String mnc = intent.getStringExtra(EXTRA_MNC);
++
++        if (!isValidMcc(mcc)) {
++            Rlog.d(LOG_TAG, "Invalid Network MCC!");
++            mcc = "123";
++        }
++
++        if (!isValidMnc(mnc)) {
++            Rlog.d(LOG_TAG, "Invalid Network MNC!");
++            mnc = "456";
++        }
++
++        mOperator[0] = opName;
++        mOperator[1] = opName;
++        mOperator[2] = mcc + mnc;
++
++        // For RIL_REQUEST_VOICE_REGISTRATION_STATE
++        String voiceRegState = intent.getStringExtra(EXTRA_VOICE_REG_STATE);
++        if (voiceRegState == null) {
++            voiceRegState = "2";
++        }
++        String voiceRat = intent.getStringExtra(EXTRA_VOICE_RAT);
++        if (voiceRat == null) {
++            voiceRat = "0";
++        }
++        mVoiceRegState[0] = voiceRegState;
++        if ("3".equals(voiceRat) || "14".equals(voiceRat) || "16".equals(voiceRat))  {
++            mVoiceRegState[1] = "1415";
++            mVoiceRegState[2] = "0283af02";
++        }
++        mVoiceRegState[3] = voiceRat;
++
++        String sid = intent.getStringExtra(EXTRA_SID);
++        if (!isNumberString(sid)) {
++            sid = null;
++        }
++
++        String nid = intent.getStringExtra(EXTRA_NID);
++        if (!isNumberString(nid)) {
++            nid = null;
++        }
++
++        String roam_ind = intent.getStringExtra(EXTRA_ROAM_IND);
++        if (!isNumberString(roam_ind)) {
++            roam_ind = null;
++        }
++
++        mVoiceRegState[8] = sid;
++        mVoiceRegState[9] = nid;
++        mVoiceRegState[10] = roam_ind;
++
++        // For RIL_REQUEST_DATA_REGISTRATION_STATE
++        String dataRegState = intent.getStringExtra(EXTRA_DATA_REG_STATE);
++        if (dataRegState == null) {
++            dataRegState = "2";
++        }
++        String dataRat = intent.getStringExtra(EXTRA_DATA_RAT);
++        if (dataRat == null) {
++            dataRat = "0";
++        }
++        mDataRegState[0] = dataRegState;
++        mDataRegState[3] = dataRat;
++
++        // RIL_REQUEST_IMS_REGISTRATION_STATE
++        String imsState = intent.getStringExtra(EXTRA_IMS_REG_STATE);
++        if (imsState == null) {
++            mImsRegState = 0;
++        } else {
++            mImsRegState = Integer.parseInt(imsState);
++        }
++
++        String imsRatFamily = intent.getStringExtra(EXTRA_IMS_REG_RAT);
++        if (imsRatFamily == null) {
++            mImsRatFamily = 1;
++        } else {
++            mImsRatFamily = Integer.parseInt(imsRatFamily);
++        }
++        notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_VOICE_NETWORK_STATE_CHANGED);
++        notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED);
++
++        int intVoiceRegState = Integer.parseInt(voiceRegState);
++        int intDataRegState = Integer.parseInt(dataRegState);
++        makeSignalStrength(intVoiceRegState, intDataRegState);
++        notifyUnsolicitedResponse(RIL_UNSOL_SIGNAL_STRENGTH);
++
++        String toastText = "[VOICE] STATE=" + voiceRegState + " RAT=" + voiceRat +
++                " [DATA] STATE=" + dataRegState + " RAT=" + dataRat +
++                " [MCC=" + mcc + " MNC=" + mnc + "]";
++        Toast.makeText(context, toastText, Toast.LENGTH_LONG).show();
++    }
++
++    private void makeSignalStrength(int voiceRegState, int dataRegState) {
++        if ((voiceRegState == 1) || (voiceRegState == 5) ||
++                (dataRegState == 1) || (dataRegState == 5))  {
++            mGsmSignalStrength = 29;
++            mGsmBitErrorRate = 0;
++            mUmtsRscp = 25;
++            mCdmaDbm = 65;
++            mCdmaEcio = 7;
++            mEvdoDbm = 85;
++            mEvdoEcio = 125;
++            mEvdoSnr = 7;
++            mLteSignalStrength = 29;
++            mLteRsrp = 140;
++            mLteRsrq = 3;
++            mLteRssnr = 300;
++            mLteCqi = 15;
++        } else {
++            // Initialize all fields
++            mGsmSignalStrength = 99;
++            mGsmBitErrorRate = 0;
++            mUmtsRscp = 0x7FFFFFFF;
++            mCdmaDbm = -1;
++            mCdmaEcio = -1;
++            mEvdoDbm = -1;
++            mEvdoEcio = -1;
++            mEvdoSnr = -1;
++            mLteSignalStrength = 99;
++            mLteRsrp = 0x7FFFFFFF;
++            mLteRsrq = 0x7FFFFFFF;
++            mLteRssnr = 0x7FFFFFFF;
++            mLteCqi = 0x7FFFFFFF;
++        }
++    }
++
++    private void processOutOfService() {
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_OUT_OF_SERVICE");
++        mOperator[0] = null;
++        mOperator[1] = null;
++        mOperator[2] = null;
++        mVoiceRegState[0] = "2";
++        mVoiceRegState[3] = "0";
++        mVoiceRegState[8] = null;
++        mVoiceRegState[9] = null;
++        mVoiceRegState[10] = null;
++        mDataRegState[0] = "2";
++        mDataRegState[3] = "0";
++        mImsRegState = 0;
++        mImsRatFamily = 1;
++        notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_VOICE_NETWORK_STATE_CHANGED);
++        notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED);
++        cleanupAllCalls();
++
++        makeSignalStrength(0, 0);
++        notifyUnsolicitedResponse(RIL_UNSOL_SIGNAL_STRENGTH);
++    }
++
++    private void processCallStateChanged(Context context, Intent intent) {
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_CALL_STATE_CHANGED");
++        String command = intent.getStringExtra(EXTRA_CALL_COMMAND);
++
++        if (TextUtils.isEmpty(command)) {
++            Rlog.d(LOG_TAG, "Invalid request!");
++            return;
++        }
++
++        boolean isIncoming = true;
++
++        if (CALL_COMMAND_ACCEPT_OR_INCOMING.equals(command)) {
++            Rlog.d(LOG_TAG, "[TEST COMMAND] CALL_COMMAND_ACCEPT_OR_INCOMING");
++            for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++                if ((mCalls[i].mState == DriverCall.State.DIALING) ||
++                        (mCalls[i].mState == DriverCall.State.ALERTING)) {
++                    mCalls[i].mState = DriverCall.State.ACTIVE;
++                    isIncoming = false;
++                    break;
++                }
++            }
++
++            // INCOMING CALL Request
++            if (isIncoming) {
++                if (mTelMgr.getPhoneType() == TelephonyManager.PHONE_TYPE_CDMA) {
++                    boolean isCdmaCallWaiting = false;
++                    // CDMA Call-waiting
++                    for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++                        if (mCalls[i].mState == DriverCall.State.ACTIVE) {
++                            notifyUnsolicitedResponse(RIL_UNSOL_CDMA_CALL_WAITING, intent);
++                            isCdmaCallWaiting = true;
++                            break;
++                        }
++                    }
++
++                    if (!isCdmaCallWaiting) {
++                        makeIncomingCallOrWaitingCall(intent);
++                    }
++                } else {
++                    // GSM case
++                    makeIncomingCallOrWaitingCall(intent);
++                }
++            }
++        } else if (CALL_COMMAND_ENDCALL.equals(command)) {
++            Rlog.d(LOG_TAG, "[TEST COMMAND] CALL_COMMAND_ENDCALL");
++            isIncoming = false;
++            boolean hangupDone = false;
++            if (mTelMgr.getPhoneType() == TelephonyManager.PHONE_TYPE_CDMA) {
++                cleanupAllCalls();
++                hangupDone = true;
++            } else {
++                for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++                    if (!mCalls[i].mIsActive) {
++                        continue;
++                    }
++                    cleanupCall(i+1);
++                    hangupDone = true;
++                    break;
++                }
++            }
++
++            if (hangupDone) {
++                String failCause = intent.getStringExtra(EXTRA_CALL_FAIL_CAUSE);
++                if (TextUtils.isEmpty(failCause)) {
++                    mLastCallFailCause = 16;
++                } else {
++                    mLastCallFailCause = Integer.parseInt(failCause);
++                }
++            }
++        } else {
++            // TODO
++            Rlog.d(LOG_TAG, "Not supported!");
++            return;
++        }
++
++        notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED);
++
++        if (isIncoming) {
++            if (mTelMgr.getPhoneType() == TelephonyManager.PHONE_TYPE_CDMA) {
++                // TODO
++//                RIL_UNSOL_CDMA_INFO_REC
++//                RIL_UNSOL_CALL_RING
++            } else {
++                notifyUnsolicitedResponse(RIL_UNSOL_CALL_RING);
++            }
++        } else {
++            // This case is for KDDI non VoLTE device.
++            if (!isVolteAvailable(context) &&
++                    (mTelMgr.getPhoneType() == TelephonyManager.PHONE_TYPE_CDMA)) {
++                String aocrReq = "514f454d484f4f4be803080014000000530100000100000002" +
++                        "0000000000000010000000";
++                notifyUnsolicitedResponse(RIL_UNSOL_OEM_HOOK_RAW, aocrReq);
++            }
++        }
++    }
++
++    private boolean isVolteAvailable(Context context) {
++        return true; // TODO
++    }
++
++
++    private void processImsiChanged(Context context, Intent intent) {
++        String mcc = intent.getStringExtra(EXTRA_SIM_MCC);
++        String mnc = intent.getStringExtra(EXTRA_SIM_MNC);
++
++        if (!isValidMcc(mcc)) {
++            Rlog.d(LOG_TAG, "Invalid MCC!");
++            mcc = "001";
++        }
++
++        if (!isValidMnc(mnc)) {
++            Rlog.d(LOG_TAG, "Invalid MNC!");
++            mnc = "01";
++        }
++
++        String ad = "0000000" + Integer.toString(mnc.length());
++
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_IMSI_CHANGED : mcc=" + mcc + " mnc=" + mnc +
++                " ad=" + ad);
++
++        mSimMcc = mcc;
++        mSimMnc = mnc;
++        mSimAd = ad;
++
++        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
++        SharedPreferences.Editor editor = sp.edit();
++        editor.putString(KEY_USIM_MCC, mcc);
++        editor.putString(KEY_USIM_MNC, mnc);
++        editor.putString(KEY_USIM_AD, ad);
++        editor.commit();
++
++        mSimMcc = sp.getString(KEY_USIM_MCC, "001");
++        mSimMnc = sp.getString(KEY_USIM_MNC, "01");
++        mSimAd = sp.getString(KEY_USIM_AD, "00000002");
++
++        String toastText = "";
++        if (!mHasIcc || mIsSimRemoved) {
++            toastText = "[CARDSTATE_ABSENT] IMSI cache has been updated." +
++                    " MCC=" + mcc + " MNC=" + mnc;
++        } else {
++            notifyUnsolicitedResponse(RIL_UNSOL_SIM_REFRESH);
++            toastText = "[SIM REFRESH] MCC=" + mcc + " MNC=" + mnc;
++        }
++
++        Toast.makeText(context, toastText, Toast.LENGTH_LONG).show();
++    }
++
++    private void processSuppSrvNotification(Intent intent) {
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_SUPP_SERVICE_NOTIFICATION");
++
++        int activeCallCount = 0;
++        int activeCallIndex = -1;
++        int activeCallToa = 129;
++        String activeCallNumber = "";
++        int holdCallCount = 0;
++        int holdCallIndex = -1;
++        int holdCallToa = 129;
++        String holdCallNumber = "";
++
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mState == DriverCall.State.ACTIVE) {
++                activeCallCount++;
++                activeCallIndex = mCalls[i].mCallIndex;
++                activeCallToa = mCalls[i].mToa;
++                activeCallNumber = mCalls[i].mNumber;
++            }
++            if (mCalls[i].mState == DriverCall.State.HOLDING) {
++                holdCallCount++;
++                holdCallIndex = mCalls[i].mCallIndex;
++                holdCallToa = mCalls[i].mToa;
++                holdCallNumber = mCalls[i].mNumber;
++            }
++        }
++
++        if ((activeCallCount == 0) && (holdCallCount == 0)) {
++            Rlog.d(LOG_TAG, "[SUPP_SERVICE] There is no target call!");
++            return;
++        }
++
++        mSuppCode = Integer.parseInt(intent.getStringExtra(EXTRA_SUPP_CODE));
++
++        if (activeCallCount == 0) {
++            // If there is no active call, use hold call.
++            mSuppIndex = holdCallIndex;
++            mSuppType = holdCallToa;
++            mSuppNumber = holdCallNumber;
++        } else {
++            mSuppIndex = activeCallIndex;
++            mSuppType = activeCallToa;
++            mSuppNumber = activeCallNumber;
++        }
++
++        String notificationType = intent.getStringExtra(EXTRA_SUPP_NOTIFICATION_TYPE);
++        mSuppNotificationType = Integer.parseInt(notificationType);
++
++        Rlog.d(LOG_TAG, "[SUPP_SERVICE] Notification Type=" + mSuppNotificationType +
++                " Code=" + mSuppCode + " Index=" + mSuppIndex + " Number=" + mSuppNumber);
++
++        notifyUnsolicitedResponse(RIL_UNSOL_SUPP_SVC_NOTIFICATION);
++    }
++
++    private void processIccStateChanged(Context context, Intent intent) {
++        boolean hasIcc = intent.getBooleanExtra(EXTRA_HAS_ICC, true);
++        boolean hasCsim = intent.getBooleanExtra(EXTRA_HAS_CSIM, true);
++        boolean hasIsim = intent.getBooleanExtra(EXTRA_HAS_ISIM, true);
++
++        Rlog.d(LOG_TAG, "[TEST COMMAND] ACTION_ICC_STATE_CHANGED : hasIcc=" + hasIcc +
++                " hasCsim=" + hasCsim + " hasIsim=" + hasIsim);
++
++        String toastText = "";
++        if (mHasIcc && hasIcc) {
++            toastText = "[CARDSTATE_PRESENT] The command has been ignored.";
++            Toast.makeText(context, toastText, Toast.LENGTH_LONG).show();
++            return;
++        }
++
++        if (!mHasIcc && !hasIcc) {
++            toastText = "[CARDSTATE_ABSENT] The command has been ignored.";
++            Toast.makeText(context, toastText, Toast.LENGTH_LONG).show();
++            return;
++        }
++
++        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
++        SharedPreferences.Editor editor = sp.edit();
++
++        if (hasIcc) {
++            mHasCsim = hasCsim;
++            mHasIsim = hasIsim;
++            editor.putBoolean(KEY_HAS_CSIM, hasCsim);
++            editor.putBoolean(KEY_HAS_ISIM, hasIsim);
++            mNumApps = 1;
++            if (mHasCsim) mNumApps++;
++            if (mHasIsim) mNumApps++;
++            toastText = "ICC has been inserted.";
++        } else {
++            toastText = "ICC has been removed.";
++            mIsSimRemoved = true;
++        }
++
++        mHasIcc = hasIcc;
++        editor.putBoolean(KEY_HAS_ICC, hasIcc);
++        editor.commit();
++
++        if (!hasIcc) notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_SIM_STATUS_CHANGED);
++
++        Toast.makeText(context, toastText, Toast.LENGTH_LONG).show();
++    }
++
++    private void makeIncomingCallOrWaitingCall(Intent intent) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mIsActive) {
++                continue;
++            }
++            if (mNumOfCalls >= 1) {
++                mCalls[i].mState = DriverCall.State.WAITING;
++            } else {
++                mCalls[i].mState = DriverCall.State.INCOMING;
++            }
++            mCalls[i].mNumber = intent.getStringExtra(EXTRA_CALL_INCOMING_NUMBER);
++            if (!isPhoneNumberString(mCalls[i].mNumber)) {
++                mCalls[i].mNumber = "";
++            }
++
++            String numPresentation = intent.getStringExtra(EXTRA_CALL_NUMBER_PRESENTATION);
++            if (TextUtils.isEmpty(numPresentation)) {
++                mCalls[i].mNumPresentation = 0;
++            } else {
++                mCalls[i].mNumPresentation = Integer.parseInt(numPresentation);
++                if ((mCalls[i].mNumPresentation < 0) || (3 < mCalls[i].mNumPresentation)) {
++                    mCalls[i].mNumPresentation = 0;
++                }
++            }
++
++            mCalls[i].mName = intent.getStringExtra(EXTRA_CALL_INCOMING_NAME);
++            mCalls[i].mNamePresentation = intent.getIntExtra(EXTRA_CALL_NAME_PRESENTATION, 0);
++            if ((mCalls[i].mNamePresentation < 0) || (3 < mCalls[i].mNamePresentation)) {
++                mCalls[i].mNamePresentation = 0;
++            }
++
++            mCalls[i].mIsMT = 1;
++            mCalls[i].mIsActive = true;
++            mNumOfCalls++;
++            break;
++        }
++    }
++
++
++// ###########################################################################################
++//
++// RIL REQUEST
++//
++// ###########################################################################################
++// For docomo branch
++//    @Override
++//    public void
++//    dial(String address, int clirMode, UUSInfo uusInfo, String subAddress, Message result) {
++//        dial(address, clirMode, null, result);
++//    }
++
++    @Override
++    public void dial(String address, int clirMode, UUSInfo uusInfo, Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mIsActive) {
++                continue;
++            }
++            mCalls[i].mNumber = address;
++            mCalls[i].mState = DriverCall.State.DIALING;
++            mCalls[i].mIsMT = 0;
++            mCalls[i].mIsActive = true;
++            mNumOfCalls++;
++            break;
++        }
++        super.dial(address, clirMode, uusInfo, result);
++
++        // Notify ALERTING 1 sec later.
++        if (mTimerAlerting != null) {
++            mTimerAlerting.schedule(new TimerTask() {
++                @Override
++                public void run() {
++                    for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++                        if (mCalls[i].mState == DriverCall.State.DIALING) {
++                            mCalls[i].mState = DriverCall.State.ALERTING;
++                            break;
++                        }
++                    }
++                    notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED);
++                }
++            }, 1000);
++        }
++    }
++
++    @Override
++    public void hangupConnection(int gsmIndex, Message result) {
++        cleanupCall(gsmIndex);
++        super.hangupConnection(gsmIndex, result);
++    }
++
++    @Override
++    public void separateConnection(int gsmIndex, Message result) {
++        int confCallCount = 0;
++        int confCallIndex = 0;
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mCallIndex == gsmIndex) {
++                mCalls[i].mState = DriverCall.State.HOLDING;
++                mCalls[i].mMpty = 0;
++            }
++            if (mCalls[i].mMpty == 1) {
++                confCallCount++;
++                confCallIndex = i;
++            }
++        }
++
++        if (confCallCount == 1) {
++            // There is no conference call.
++            mCalls[confCallIndex].mMpty = 0;
++        }
++        super.separateConnection(gsmIndex, result);
++    }
++
++    @Override
++    public void acceptCall(Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mState != DriverCall.State.INCOMING) {
++                continue;
++            }
++            mCalls[i].mState = DriverCall.State.ACTIVE;
++            break;
++        }
++        super.acceptCall(result);
++    }
++
++    @Override
++    public void rejectCall(Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if ((mCalls[i].mState != DriverCall.State.WAITING) &&
++                    (mCalls[i].mState != DriverCall.State.INCOMING)) {
++                continue;
++            }
++            cleanupCall(i+1);
++            break;
++        }
++        super.rejectCall(result);
++    }
++
++    @Override
++    public void hangupWaitingOrBackground(Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if ((mCalls[i].mState != DriverCall.State.WAITING) &&
++                    (mCalls[i].mState != DriverCall.State.INCOMING)) {
++                continue;
++            }
++
++            cleanupCall(i+1);
++            break;
++        }
++        super.hangupWaitingOrBackground(result);
++    }
++
++    @Override
++    public void hangupForegroundResumeBackground(Message result) {
++        if (mNumOfCalls == 1) {
++            cleanupAllCalls();
++        } else {
++            for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++                if (mCalls[i].mState == DriverCall.State.HOLDING) {
++                    mCalls[i].mState = DriverCall.State.ACTIVE;
++                    continue;
++                }
++                if (mCalls[i].mState != DriverCall.State.ACTIVE) {
++                    continue;
++                }
++                cleanupCall(i+1);
++            }
++        }
++        super.hangupForegroundResumeBackground(result);
++    }
++
++    @Override
++    public void switchWaitingOrHoldingAndActive(Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mState == DriverCall.State.WAITING) {
++                mCalls[i].mState = DriverCall.State.ACTIVE;
++                continue;
++            }
++
++            if (mCalls[i].mState == DriverCall.State.HOLDING) {
++                mCalls[i].mState = DriverCall.State.ACTIVE;
++                continue;
++            }
++
++            if (mCalls[i].mState == DriverCall.State.ACTIVE) {
++                mCalls[i].mState = DriverCall.State.HOLDING;
++                continue;
++            }
++        }
++        super.switchWaitingOrHoldingAndActive(result);
++    }
++
++    @Override
++    public void conference(Message result) {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mState == DriverCall.State.HOLDING) {
++                mCalls[i].mState = DriverCall.State.ACTIVE;
++                mCalls[i].mMpty = 1;
++                continue;
++            }
++            if (mCalls[i].mState == DriverCall.State.ACTIVE) {
++                mCalls[i].mMpty = 1;
++                continue;
++            }
++        }
++        super.conference(result);
++    }
++
++
++// ###########################################################################################
++//
++// Send request / Solicited response
++//
++// ###########################################################################################
++    @Override
++    protected void send(RILRequest rr) {
++        switch (rr.mRequest) {
++        case RIL_REQUEST_DIAL:
++        case RIL_REQUEST_SETUP_DATA_CALL:
++        case RIL_REQUEST_DEACTIVATE_DATA_CALL:
++        case RIL_REQUEST_CDMA_FLASH:
++        case RIL_REQUEST_HANGUP:
++        case RIL_REQUEST_SEPARATE_CONNECTION:
++        case RIL_REQUEST_ANSWER:
++        case RIL_REQUEST_UDUB:
++        case RIL_REQUEST_HANGUP_WAITING_OR_BACKGROUND:
++        case RIL_REQUEST_HANGUP_FOREGROUND_RESUME_BACKGROUND:
++        case RIL_REQUEST_SWITCH_WAITING_OR_HOLDING_AND_ACTIVE:
++        case RIL_REQUEST_CONFERENCE:
++        case RIL_REQUEST_GET_CURRENT_CALLS:
++        case RIL_REQUEST_VOICE_REGISTRATION_STATE:
++        case RIL_REQUEST_DATA_REGISTRATION_STATE:
++        case RIL_REQUEST_OPERATOR:
++        case RIL_REQUEST_VOICE_RADIO_TECH:
++        case RIL_REQUEST_IMS_REGISTRATION_STATE:
++        case RIL_REQUEST_GET_SIM_STATUS:
++        case RIL_REQUEST_SET_UICC_SUBSCRIPTION:
++        case RIL_REQUEST_QUERY_FACILITY_LOCK:
++        case RIL_REQUEST_GET_IMSI:
++        case RIL_REQUEST_LAST_CALL_FAIL_CAUSE:
++        case RIL_REQUEST_SIM_IO:
++            Message msg = mSender.obtainMessage(EVENT_SEND_SOL_RESPONSE, rr);
++            msg.sendToTarget();
++            break;
++        default:
++            super.send(rr);
++            break;
++        }
++    }
++
++    private void sendSolicitedResponse(RILRequest rr) {
++        synchronized (mRequestList) {
++            mRequestList.append(rr.mSerial, rr);
++        }
++
++        switch (rr.mRequest) {
++        case RIL_REQUEST_DIAL:
++        case RIL_REQUEST_DEACTIVATE_DATA_CALL:
++        case RIL_REQUEST_CDMA_FLASH:
++        case RIL_REQUEST_HANGUP:
++        case RIL_REQUEST_SEPARATE_CONNECTION:
++        case RIL_REQUEST_ANSWER:
++        case RIL_REQUEST_UDUB:
++        case RIL_REQUEST_HANGUP_WAITING_OR_BACKGROUND:
++        case RIL_REQUEST_HANGUP_FOREGROUND_RESUME_BACKGROUND:
++        case RIL_REQUEST_SWITCH_WAITING_OR_HOLDING_AND_ACTIVE:
++        case RIL_REQUEST_CONFERENCE:
++        case RIL_REQUEST_SET_UICC_SUBSCRIPTION:
++            responseVoid(rr);
++            break;
++        case RIL_REQUEST_SETUP_DATA_CALL:
++            responseSetupDataCall(rr);
++            break;
++        case RIL_REQUEST_GET_CURRENT_CALLS:
++            responseCallList(rr);
++            break;
++        case RIL_REQUEST_VOICE_REGISTRATION_STATE:
++            responseString(rr, mVoiceRegState);
++            break;
++        case RIL_REQUEST_DATA_REGISTRATION_STATE:
++            responseString(rr, mDataRegState);
++            break;
++        case RIL_REQUEST_OPERATOR:
++            responseString(rr, mOperator);
++            break;
++        case RIL_REQUEST_VOICE_RADIO_TECH:
++            int[] voiceRat = new int[] {Integer.parseInt(mVoiceRegState[3])};
++            responseInts(rr, voiceRat);
++            break;
++        case RIL_REQUEST_IMS_REGISTRATION_STATE:
++            int[] imsRegState = new int[] {mImsRegState, mImsRatFamily};
++            responseInts(rr, imsRegState);
++            break;
++        case RIL_REQUEST_GET_SIM_STATUS:
++            responseIccCardStatus(rr);
++            break;
++        case RIL_REQUEST_QUERY_FACILITY_LOCK:
++            int[] response = new int[] {0}; //0 - Available & Disabled
++            responseInts(rr, response);
++            break;
++        case RIL_REQUEST_GET_IMSI:
++            String imsi = mSimMcc + mSimMnc + MDN;
++            responseImsi(rr, imsi);
++            break;
++        case RIL_REQUEST_LAST_CALL_FAIL_CAUSE:
++            responseFailCause(rr, mLastCallFailCause, "vendor cause");
++            break;
++        case RIL_REQUEST_SIM_IO:
++            responseICC_IO(rr);
++            break;
++        default:
++            Rlog.d(LOG_TAG, "Invalid Request!");
++            break;
++        }
++
++
++        // Notify unsolicited response
++        switch (rr.mRequest) {
++        case RIL_REQUEST_SETUP_DATA_CALL:
++        case RIL_REQUEST_DEACTIVATE_DATA_CALL:
++            notifyUnsolicitedResponse(RIL_UNSOL_DATA_CALL_LIST_CHANGED);
++            break;
++        case RIL_REQUEST_CDMA_FLASH:
++        case RIL_REQUEST_HANGUP:
++        case RIL_REQUEST_SEPARATE_CONNECTION:
++        case RIL_REQUEST_ANSWER:
++        case RIL_REQUEST_UDUB:
++        case RIL_REQUEST_HANGUP_WAITING_OR_BACKGROUND:
++        case RIL_REQUEST_HANGUP_FOREGROUND_RESUME_BACKGROUND:
++        case RIL_REQUEST_SWITCH_WAITING_OR_HOLDING_AND_ACTIVE:
++        case RIL_REQUEST_CONFERENCE:
++            notifyUnsolicitedResponse(RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED);
++            break;
++        default:
++            break;
++        }
++    }
++
++    private void responseVoid(RILRequest rr) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseString(RILRequest rr, String[] data) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.writeStringArray(data);
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseInts(RILRequest rr, int[] values) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.writeInt(values.length);
++        for (int i = 0; i < values.length; i++) {
++            parcel.writeInt(values[i]);
++        }
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseImsi(RILRequest rr, String imsi) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.writeString(imsi);
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseFailCause(RILRequest rr, int cause, String vendorCause) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.writeInt(cause);
++        parcel.writeString(vendorCause);
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseSetupDataCall(RILRequest rr) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial);
++        parcel.writeInt(0);
++        parcel.writeInt(9);  // Version
++        parcel.writeInt(1);  // Number of connections. Not support Multi-Connection
++        parcel.writeInt(0);  // A RIL_DataCallFailCause, 0 which is PDP_FAIL_NONE if no error
++        parcel.writeInt(-1); // Retry Time
++        parcel.writeInt(0);  // Context ID
++        parcel.writeInt(2);  // 0=inactive, 1=active/physical link down, 2=active/physical link up
++        parcel.writeString("IPV4V6");        // PDP Type
++        parcel.writeString("rmnet0");        // The network interface name
++        parcel.writeString("192.0.1.11/16"); // Address
++        parcel.writeString("192.0.1.12");    // DNS server addresses
++        parcel.writeString("192.0.1.13");    // Default Gateway address
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseCallList(RILRequest rr) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial); // Serial
++        parcel.writeInt(0);          // Error
++        parcel.writeInt(mNumOfCalls);    // Number of calls
++
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (!mCalls[i].mIsActive) {
++                continue;
++            }
++            parcel.writeInt(mCalls[i].mState.ordinal()); // Call State
++            parcel.writeInt(mCalls[i].mCallIndex); // Connection Index
++            parcel.writeInt(mCalls[i].mToa);       // type of address, eg 145 = intl
++            parcel.writeInt(mCalls[i].mMpty);      // nonzero if is mpty call
++            parcel.writeInt(mCalls[i].mIsMT);      // nonzero if call is mobile terminated
++            parcel.writeInt(0);                    // ALS line indicator if available
++            parcel.writeInt(1);                    // nonzero if this is is a voice call
++            parcel.writeInt(mCalls[i].mVoicePrivacy); // nonzero if Voice privacy is active
++            parcel.writeString(mCalls[i].mNumber);    // Remote party number
++            parcel.writeInt(mCalls[i].mNumPresentation);  // Number presentation (0=Allowed,
++                                                          // 1=Restricted, 2=Not Specified/Unknown
++                                                          // 3=Payphone)
++            parcel.writeString(mCalls[i].mName);          // Remote party name
++            parcel.writeInt(mCalls[i].mNamePresentation); // Name presentation
++            parcel.writeInt(0); // NULL or Pointer to User-User Signaling Information
++            /* SONY_BEGIN (HD Voice Display Feature for Sprint) */
++            parcel.writeString("Codec=AMR_WB"); // TODO
++            /* SONY_END (HD Voice Display Feature for Sprint) */
++        }
++
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++        logCallList();
++    }
++
++    private void responseIccCardStatus(RILRequest rr) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial); // Serial
++        parcel.writeInt(0);          // Error
++
++        if (!mHasIcc || mIsSimRemoved) {
++            parcel.writeInt(0);  // RIL_CardState (0:RIL_CARDSTATE_ABSENT)
++            parcel.writeInt(0);  // RIL_PinState (0:RIL_PINSTATE_UNKNOWN)
++            parcel.writeInt(-1); // gsm_umts_subscription_app_index
++            parcel.writeInt(-1); // cdma_subscription_app_index
++            parcel.writeInt(-1); // ims_subscription_app_index
++            parcel.writeInt(0);  // num_applications
++        } else {
++            parcel.writeInt(1);  // RIL_CardState (1:RIL_CARDSTATE_PRESENT)
++            parcel.writeInt(3);  // RIL_PinState (3:RIL_PINSTATE_DISABLED)
++            parcel.writeInt(0);  // gsm_umts_subscription_app_index
++            if (mHasCsim && mHasIsim) {
++                parcel.writeInt(1);  // cdma_subscription_app_index
++                parcel.writeInt(2);  // ims_subscription_app_index
++            } else if (mHasCsim && !mHasIsim) {
++                parcel.writeInt(1);  // cdma_subscription_app_index
++                parcel.writeInt(-1); // ims_subscription_app_index
++            } else if (!mHasCsim && mHasIsim) {
++                parcel.writeInt(-1); // cdma_subscription_app_index
++                parcel.writeInt(1);  // ims_subscription_app_index
++            } else { // !mHasCsim && !mHasIsim
++                parcel.writeInt(-1); // cdma_subscription_app_index
++                parcel.writeInt(-1); // ims_subscription_app_index
++            }
++            parcel.writeInt(mNumApps);  // num_applications
++        }
++
++        // USIM Status
++        parcel.writeInt(2); // RIL_APPTYPE_USIM
++        parcel.writeInt(5); // RIL_APPSTATE_READY
++        parcel.writeInt(2); // RIL_PERSOSUBSTATE_READY
++        parcel.writeString(USIM_AID); // aid_ptr
++        parcel.writeString("00000000000000"); // app_label_ptr
++        parcel.writeInt(0); // pin1_replaced
++        parcel.writeInt(3); // PIN1 State (PINSTATE_DISABLED)
++        parcel.writeInt(3); // PIN2 State (PINSTATE_DISABLED)
++
++        if (mHasCsim) {
++            // CSIM Status
++            parcel.writeInt(4); // RIL_APPTYPE_CSIM
++            parcel.writeInt(5); // RIL_APPSTATE_READY
++            parcel.writeInt(2); // RIL_PERSOSUBSTATE_READY
++            parcel.writeString(CSIM_AID); // aid_ptr
++            parcel.writeString("000000000000000000000000"); // app_label_ptr
++            parcel.writeInt(0); // pin1_replaced
++            parcel.writeInt(3); // PIN1 State (PINSTATE_DISABLED)
++            parcel.writeInt(3); // PIN2 State (PINSTATE_DISABLED)
++        }
++
++        if (mHasIsim) {
++            // ISIM Status
++            parcel.writeInt(5); // RIL_APPTYPE_ISIM
++            parcel.writeInt(5); // RIL_APPSTATE_READY
++            parcel.writeInt(0); // RIL_PERSOSUBSTATE_UNKNOWN
++            parcel.writeString(ISIM_AID); // aid_ptr
++            parcel.writeString(""); // app_label_ptr
++            parcel.writeInt(0); // pin1_replaced
++            parcel.writeInt(3); // PIN1 State (PINSTATE_DISABLED)
++            parcel.writeInt(3); // PIN2 State (PINSTATE_DISABLED)
++        }
++
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private void responseICC_IO(RILRequest rr) {
++        rr.mParcel.setDataPosition(0);
++        int reqest  = rr.mParcel.readInt();
++        int serial  = rr.mParcel.readInt();
++        int command = rr.mParcel.readInt();
++        int fileid  = rr.mParcel.readInt();
++        String path = rr.mParcel.readString();
++        int p1      = rr.mParcel.readInt();
++        int p2      = rr.mParcel.readInt();
++        int p3      = rr.mParcel.readInt();
++        String data = rr.mParcel.readString();
++        String pin2 = rr.mParcel.readString();
++        String aid  = rr.mParcel.readString();
++
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(rr.mSerial); // Serial
++        parcel.writeInt(0);          // Error
++        parcel.writeInt(144);        // sw1
++        parcel.writeInt(0);          // sw2
++
++        if (USIM_AID.equals(aid)) {
++            if (command == COMMAND_READ_BINARY) { // 0xb0
++                parcel.writeString(getUsimEfDataReadBin(fileid));
++            } else if (command == COMMAND_READ_RECORD) { // 0xb2
++                parcel.writeString(getUsimEfDataReadRec(fileid));
++            } else if (command == COMMAND_GET_RESPONSE) { // 0xc0
++                parcel.writeString(getUsimEfDataGetRes(fileid));
++            } else {
++                Rlog.d(LOG_TAG, "Unsupported command : " + command);
++                parcel.writeString("");
++            }
++        } else if (CSIM_AID.equals(aid)) {
++            if (command == COMMAND_READ_BINARY) { // 0xb0
++                parcel.writeString(getCsimEfDataReadBin(fileid));
++            } else if (command == COMMAND_READ_RECORD) { // 0xb2
++                parcel.writeString(getCsimEfDataReadRec(fileid, p1));
++            } else if (command == COMMAND_GET_RESPONSE) { // 0xc0
++                parcel.writeString(getCsimEfDataGetRes(fileid));
++            } else {
++                Rlog.d(LOG_TAG, "Unsupported command : " + command);
++                parcel.writeString("");
++            }
++        } else if (ISIM_AID.equals(aid)) {
++            if (command == COMMAND_READ_BINARY) { // 0xb0
++                parcel.writeString(getIsimEfDataReadBin(fileid));
++            } else if (command == COMMAND_READ_RECORD) { // 0xb2
++                parcel.writeString(getIsimEfDataReadRec(fileid, p1));
++            } else if (command == COMMAND_GET_RESPONSE) { // 0xc0
++                parcel.writeString(getIsimEfDataGetRes(fileid));
++            } else {
++                Rlog.d(LOG_TAG, "Unsupported command : " + command);
++                parcel.writeString("");
++            }
++        } else {
++            Rlog.d(LOG_TAG, "Invalid AID!");
++        }
++
++        parcel.setDataPosition(0);
++        super.processSolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++    private String getUsimEfDataReadBin(int efid) {
++        switch (efid) {
++        case IccConstants.EF_ICCID: return "00000000000000000000";
++        case IccConstants.EF_SST: return "9effbffdfffe5d0040200104000000";
++        case IccConstants.EF_AD: return mSimAd;
++        case IccConstants.EF_SPN: return "01414e5249545355ffffffffffffffffff";
++        case IccConstants.EF_SPDI: return "fffffffffffffffffffffffffffffffffffffffffffffff" +
++                                          "fffffffffffffffffffffffffffffffffffffffffffffff" +
++                                          "ffffffffffffffffffffffffffffffffff";
++        case IccConstants.EF_GID1: return "ffffffffffffffff";
++        case EF_HPLMN_WACT: return "ffffff0000ffffff0000";
++        default: return "";
++        }
++    }
++
++    private String getUsimEfDataReadRec(int efid) {
++        switch (efid) {
++        case IccConstants.EF_MSISDN: return "4d79204e756d626572fffffffffffffffffffffffffff" +
++                                            "fffff07911132547698f0ffffffffffff";
++        case IccConstants.EF_MBI: return "00000000";
++        case IccConstants.EF_MWIS: return "0000000000";
++        case IccConstants.EF_CFIS: return "ff00ffffffffffffffffffffffffffff";
++        case IccConstants.EF_PNN: return "ffffffffffffffffffffffffffffffffffffffffffffffff" +
++                                         "ffffffffffffffffffff";
++        case IccConstants.EF_SDN: return "ffffffffffffffffffffffffffffffffffffffffffffffff" +
++                                         "ffffffffffffffffffffffffffffff";
++        default: return "";
++        }
++    }
++
++    private String getUsimEfDataGetRes(int efid) {
++        switch (efid) {
++        case IccConstants.EF_ICCID: return "0000000a2fe2040000000005020000";
++        case IccConstants.EF_MSISDN: return "000000756f40040000000005020127";
++        case IccConstants.EF_SST: return "0000000f6f38040000000005020000";
++        case IccConstants.EF_MBI: return "000000046fc9040000000005020104";
++        case IccConstants.EF_AD: return "000000046fad040000000005020000";
++        case IccConstants.EF_MWIS: return "000000056fca040000000005020105";
++        case IccConstants.EF_VOICE_MAIL_INDICATOR_CPHS: return "";
++        case IccConstants.EF_CFIS: return "000000106fcb040000000005020110";
++        case IccConstants.EF_CFF_CPHS: return "";
++        case IccConstants.EF_SPN: return "000000116f46040000000005020000";
++        case IccConstants.EF_SPDI: return "000000406fcd040000000005020000";
++        case IccConstants.EF_PNN: return "000000446fc5040000000005020122";
++        case IccConstants.EF_INFO_CPHS: return "";
++        case IccConstants.EF_CSP_CPHS: return "";
++        case IccConstants.EF_GID1: return "000000086f3e040000000005020000";
++        /*Depends-On I91381a753d4b9e3619c1885b9bbf942a6936b5d4. case IccConstants.EF_ACTING_HPLMN: return "";*/
++        case EF_HPLMN_WACT: return "0000000a6f62040000000005020000";
++        case IccConstants.EF_MAILBOX_CPHS: return "";
++        case IccConstants.EF_SDN: return "000001866f49040000000005020127";
++        default: return "";
++        }
++    }
++
++    private String getCsimEfDataReadBin(int efid) {
++        switch (efid) {
++        case IccConstants.EF_CSIM_EPRL: return "0070029a";
++        case IccConstants.EF_ICCID: return "00000000000000000000";
++        case IccConstants.EF_PL: return "6a61656effffffffffff";
++        case IccConstants.EF_CSIM_LI: return "ffff";
++        case IccConstants.EF_CSIM_SPN: return "01020144656661756c7420536572766963652050726" +
++                                              "f7669646572204e616d65ffffff";
++        case IccConstants.EF_CSIM_IMSIM: return "000c00155f565a80de03";
++        default: return "";
++        }
++    }
++
++    private String getCsimEfDataReadRec(int efid, int p1) {
++        switch (efid) {
++        case IccConstants.EF_CSIM_MDN: return "0b1132547698faffff0900";
++        case IccConstants.EF_CSIM_CDMAHOME: return "e803ae080" + Integer.toString(p1);
++        default: return "";
++        }
++    }
++
++    private String getCsimEfDataGetRes(int efid) {
++        switch (efid) {
++        case EF_CSIM_SF_EUIMID: return "";
++        case IccConstants.EF_CSIM_MDN: return "0000000b6f4404000000000502010b";
++        case IccConstants.EF_ICCID: return "0000000a2fe2040000000005020000";
++        case IccConstants.EF_PL: return "0000000a2f05040000000005020000";
++        case IccConstants.EF_ADN: return "000000026f3a040000000005020000";
++        case IccConstants.EF_CSIM_SPN: return "000000236f41040000000005020000";
++        case IccConstants.EF_CSIM_IMSIM: return "0000000a6f22040000000005020000";
++        case IccConstants.EF_CSIM_CDMAHOME: return "0000001e6f28040000000005020105";
++        default: return "";
++        }
++    }
++
++    private String getIsimEfDataReadBin(int efid) {
++        switch (efid) {
++        case IccConstants.EF_IMPI: return "801d30303130313031323334353637383940746573742e3" +
++                                          "36770702e636f6dffffffffffffffffffffffffffffffff" +
++                                          "ffffffffffffffffffffffffffffffffffffffffffffff";
++        case IccConstants.EF_DOMAIN: return "800d746573742e336770702e636f6dfffffffffffffff" +
++                                            "fffffffffffffffffffffffffffffffffffffffffffff" +
++                                            "fffffffffffffffffffffffffffffffffffffffffffff" +
++                                            "fffff";
++        default: return "";
++        }
++    }
++
++    private String getIsimEfDataReadRec(int efid, int p1) {
++        switch (efid) {
++        case IccConstants.EF_IMPU:
++            if (p1 == 1) {
++                return "80357369703a30303130313031323334353637383940696d732e6d6e633234362e" +
++                       "6d63633038312e336770706e6574776f726b2e6f7267ffffffffffffffffffffff" +
++                       "ffffffff";
++            } else if (p1 == 2) {
++                return "801e7369703a2b313132333435363738393040746573742e336770702e636f6dff" +
++                       "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
++                       "ffffffff";
++            } else if (p1 == 3) {
++                return "80167369703a7573657240746573742e336770702e636f6dffffffffffffffffff" +
++                       "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
++                       "ffffffff";
++            } else {
++                return "";
++            }
++        default: return "";
++        }
++    }
++
++    private String getIsimEfDataGetRes(int efid) {
++        switch (efid) {
++        case IccConstants.EF_IMPI: return "000000466f02040000000005020000";
++        case IccConstants.EF_IMPU: return "000000d26f04040000000005020146";
++        case IccConstants.EF_DOMAIN: return "000000466f03040000000005020000";
++        default: return "";
++        }
++    }
++
++
++// ###########################################################################################
++//
++// Unsolicited response
++//
++// ###########################################################################################
++    @Override
++    protected void processUnsolicited(Parcel p) {
++        int position = p.dataPosition();
++        int response = p.readInt();
++        p.setDataPosition(position);
++
++        Parcel parcel;
++
++        switch (response) {
++        case RIL_UNSOL_VOICE_RADIO_TECH_CHANGED:
++            parcel = Parcel.obtain();
++            parcel.writeInt(RIL_UNSOL_VOICE_RADIO_TECH_CHANGED);
++            parcel.writeInt(Integer.parseInt(mVoiceRegState[3]));
++            parcel.setDataPosition(0);
++            super.processUnsolicited(parcel);
++            parcel.recycle();
++            parcel = null;
++            break;
++        default:
++            super.processUnsolicited(p);
++            break;
++        }
++    }
++
++    private void notifyUnsolicitedResponse(int event) {
++        notifyUnsolicitedResponse(event, null);
++    }
++
++    private void notifyUnsolicitedResponse(int event, Object obj) {
++        if ((event == RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED)
++                && (mTimerCallStateChanged != null)) {
++            mTimerCallStateChanged.schedule(new TimerTask() {
++                @Override
++                public void run() {
++                    Message msg;
++                    msg = mSender.obtainMessage(EVENT_SEND_UNSOL_RESPONSE);
++                    msg.arg1 = RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED;
++                    msg.sendToTarget();
++                }
++            }, 500);
++        } else {
++            Message msg;
++            if (obj != null) {
++                msg = mSender.obtainMessage(EVENT_SEND_UNSOL_RESPONSE, obj);
++            } else {
++                msg = mSender.obtainMessage(EVENT_SEND_UNSOL_RESPONSE);
++            }
++            msg.arg1 = event;
++            msg.sendToTarget();
++        }
++    }
++
++    private void sendUnsolicitedResponse(int event, Object obj) {
++        Parcel parcel = Parcel.obtain();
++        parcel.writeInt(event);
++
++        switch (event) {
++        case RIL_UNSOL_CALL_RING:
++        case RIL_UNSOL_RESPONSE_VOICE_NETWORK_STATE_CHANGED:
++        case RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED:
++        case RIL_UNSOL_RESPONSE_SIM_STATUS_CHANGED:
++        case RIL_UNSOL_SIGNAL_STRENGTH:
++            break;
++        case RIL_UNSOL_DATA_CALL_LIST_CHANGED:
++            parcel.writeInt(9);  // Version
++            parcel.writeInt(1);  // Number of connections. Not support Multi-Connection
++            parcel.writeInt(0);  // A RIL_DataCallFailCause,
++                                 // 0 which is PDP_FAIL_NONE if no error
++            parcel.writeInt(-1); // Retry Time
++            parcel.writeInt(0);  // Context ID
++            parcel.writeInt(2);  // 0=inactive, 1=active/physical link down,
++                                 // 2=active/physical link up
++            parcel.writeString("IPV4V6"); // PDP Type
++            parcel.writeString("rmnet0"); // The network interface name
++            parcel.writeString("192.0.1.11/16"); // Address
++            parcel.writeString("192.0.1.12");    // DNS server addresses
++            parcel.writeString("192.0.1.13");    // Default Gateway address
++            break;
++        case RIL_UNSOL_SIM_REFRESH:
++            parcel.writeInt(1);  // SIM_INIT
++            parcel.writeInt(0);  // EF_ID (Only for SIM_UPDATE)
++            parcel.writeString(USIM_AID);  // Application ID
++            break;
++        case RIL_UNSOL_SUPP_SVC_NOTIFICATION:
++            parcel.writeInt(mSuppNotificationType);  // Notification Type (0 = MO, 1 = MT)
++            parcel.writeInt(mSuppCode);              // Code
++            parcel.writeInt(mSuppIndex);             // Index (CUG index)
++            parcel.writeInt(mSuppType);              // Type (MT Only)
++            parcel.writeString(mSuppNumber);         // Number (MT only, may be NULL.)
++            break;
++        case RIL_UNSOL_CDMA_CALL_WAITING:
++            Intent intent = (Intent) obj;
++            int numPresentation = 0;
++            String number = intent.getStringExtra(EXTRA_CALL_INCOMING_NUMBER);
++            String stringNumPresentation = intent.getStringExtra(EXTRA_CALL_NUMBER_PRESENTATION);
++            if (TextUtils.isEmpty(stringNumPresentation)) {
++                numPresentation = 0;
++            } else {
++                numPresentation = Integer.parseInt(stringNumPresentation);
++                if ((numPresentation < 0) || (3 < numPresentation)) {
++                    numPresentation = 0;
++                }
++            }
++            parcel.writeString(number);        // Phone number
++            parcel.writeInt(numPresentation);  // Phone presentation
++            parcel.writeString("");            // Name
++            parcel.writeInt(0);                // non-zero if signal information record is present
++            parcel.writeInt(0);                // as defined C.S0005 3.7.5.5-1
++            parcel.writeInt(0);                // as defined C.S0005 3.7.5.5-2
++            parcel.writeInt(0);                // as defined C.S0005 3.7.5.5-3, 7.5.5-4, 7.5.5-5
++            parcel.writeInt(1242109616);       // Number Type
++            parcel.writeInt(8);                // Number Plan
++            break;
++        case RIL_UNSOL_OEM_HOOK_RAW:
++            String oemReq = (String) obj;
++            parcel.writeByteArray(IccUtils.hexStringToBytes(oemReq));
++            break;
++        default:
++            break;
++        }
++
++        parcel.setDataPosition(0);
++        super.processUnsolicited(parcel);
++        parcel.recycle();
++        parcel = null;
++    }
++
++
++// ###########################################################################################
++//
++// Utilities
++//
++// ###########################################################################################
++    private void logCallList() {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            Rlog.d(LOG_TAG, "[CallList] Index = " + mCalls[i].mCallIndex +
++                    " isActive = " + mCalls[i].mIsActive +
++                    " Number = " + mCalls[i].mNumber +
++                    " Name = " + mCalls[i].mName +
++                    " CallState = " + mCalls[i].mState +
++                    " isMT = " + mCalls[i].mIsMT +
++                    " Conference = " + mCalls[i].mMpty +
++                    " VoicePrivacy = " + mCalls[i].mVoicePrivacy +
++                    " NumberPresentation = " + mCalls[i].mNumPresentation +
++                    " NamePresentation = " + mCalls[i].mNamePresentation);
++        }
++        Rlog.d(LOG_TAG, "[CallList] Num of Calls = " + mNumOfCalls);
++    }
++
++    private void cleanupCall(int index) {
++        int confCallCount = 0;
++        int confCallIndex = 0;
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            if (mCalls[i].mCallIndex == index) {
++                mCalls[i].mNumber = null;
++                mCalls[i].mName = "";
++                mCalls[i].mState = null;
++                mCalls[i].mIsMT = 0;
++                mCalls[i].mMpty = 0;
++                mCalls[i].mVoicePrivacy = 0;
++                mCalls[i].mNumPresentation = 0;
++                mCalls[i].mNamePresentation = 0;
++                mCalls[i].mIsActive = false;
++                mNumOfCalls--;
++            }
++            if (mCalls[i].mMpty == 1) {
++                confCallCount++;
++                confCallIndex = i;
++            }
++        }
++        if (confCallCount == 1) {
++            // There is no conference call.
++            mCalls[confCallIndex].mMpty = 0;
++        }
++    }
++
++    private void cleanupAllCalls() {
++        for (int i = 0; i < MAX_CALL_COUNTS; i++) {
++            mCalls[i].mNumber = null;
++            mCalls[i].mName = "";
++            mCalls[i].mState = null;
++            mCalls[i].mIsMT = 0;
++            mCalls[i].mMpty = 0;
++            mCalls[i].mVoicePrivacy = 0;
++            mCalls[i].mNumPresentation = 0;
++            mCalls[i].mNamePresentation = 0;
++            mCalls[i].mIsActive = false;
++        }
++        mNumOfCalls = 0;
++    }
++
++    private boolean isValidMcc(String mcc) {
++        if (TextUtils.isEmpty(mcc)) return false;
++        Pattern p = Pattern.compile("^\\d{3}$");
++        Matcher m = p.matcher(mcc);
++        return m.find();
++    }
++
++    private boolean isValidMnc(String mnc) {
++        if (TextUtils.isEmpty(mnc)) return false;
++        Pattern p = Pattern.compile("^\\d{1,3}$");
++        Matcher m = p.matcher(mnc);
++        return m.find();
++    }
++
++    private boolean isNumberString(String number) {
++        if (TextUtils.isEmpty(number)) return false;
++        Pattern p = Pattern.compile("^\\d*$");
++        Matcher m = p.matcher(number);
++        return m.find();
++    }
++
++    private boolean isPhoneNumberString(String number) {
++        if (TextUtils.isEmpty(number)) return false;
++        Pattern p = Pattern.compile("^\\d*$");
++        Matcher m;
++        if (number.startsWith("+")) {
++            m = p.matcher(number.substring("+".length(), number.length()));
++        } else {
++            m = p.matcher(number);
++        }
++        return m.find();
++    }
++}
+diff --git a/src/java/com/android/internal/telephony/PhoneFactory.java b/src/java/com/android/internal/telephony/PhoneFactory.java
+index 11719c92..a2c37a5 100644
+--- a/src/java/com/android/internal/telephony/PhoneFactory.java
++++ b/src/java/com/android/internal/telephony/PhoneFactory.java
+@@ -133,7 +133,13 @@ public class PhoneFactory {
+                 int numPhones = TelephonyManager.getDefault().getPhoneCount();
+                 int[] networkModes = new int[numPhones];
+                 sProxyPhones = new PhoneProxy[numPhones];
+-                sCommandsInterfaces = new RIL[numPhones];
++                if (SystemProperties.getBoolean("persist.telephony.mockdisabled", false)) {
++                    Rlog.i(LOG_TAG, "MockRIL : Disabled");
++                    sCommandsInterfaces = new RIL[numPhones];
++                } else {
++                    Rlog.i(LOG_TAG, "MockRIL : Enabled");
++                    sCommandsInterfaces = new MockRIL[numPhones];
++                }
+ 
+                 for (int i = 0; i < numPhones; i++) {
+                     // reads the system properties and makes commandsinterface
+@@ -148,8 +154,13 @@ public class PhoneFactory {
+                         networkModes[i] = RILConstants.PREFERRED_NETWORK_MODE;
+                     }
+                     Rlog.i(LOG_TAG, "Network Mode set to " + Integer.toString(networkModes[i]));
+-                    sCommandsInterfaces[i] = new RIL(context, networkModes[i],
+-                            cdmaSubscription, i);
++                    if (SystemProperties.getBoolean("persist.telephony.mockdisabled", false)) {
++                        sCommandsInterfaces[i] = new RIL(context, networkModes[i],
++                                cdmaSubscription, i);
++                    } else {
++                        sCommandsInterfaces[i] = new MockRIL(context, networkModes[i],
++                                cdmaSubscription, i);
++                    }
+                 }
+                 Rlog.i(LOG_TAG, "Creating SubscriptionController");
+                 TelephonyPluginDelegate.getInstance().initSubscriptionController(context,
+diff --git a/src/java/com/android/internal/telephony/RIL.java b/src/java/com/android/internal/telephony/RIL.java
+index 404f77e..7177337 100755
+--- a/src/java/com/android/internal/telephony/RIL.java
++++ b/src/java/com/android/internal/telephony/RIL.java
+@@ -237,7 +237,7 @@ class RILRequest {
+  *
+  * {@hide}
+  */
+-public final class RIL extends BaseCommands implements CommandsInterface {
++public class RIL extends BaseCommands implements CommandsInterface {
+     static final String RILJ_LOG_TAG = "RILJ";
+     static final boolean RILJ_LOGD = true;
+     static final boolean RILJ_LOGV = false; // STOPSHIP if true
+@@ -2584,7 +2584,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
+         }
+     }
+ 
+-    private void
++    protected void
+     send(RILRequest rr) {
+         Message msg;
+ 
+@@ -2659,7 +2659,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
+         return rr;
+     }
+ 
+-    private RILRequest
++    protected RILRequest
+     processSolicited (Parcel p) {
+         int serial, error;
+         boolean found = false;
+@@ -3023,7 +3023,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
+         return s;
+     }
+ 
+-    private void
++    protected void
+     processUnsolicited (Parcel p) {
+         int response;
+         Object ret;
+@@ -4146,7 +4146,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
+         return response;
+     }
+ 
+-    private Object
++    protected Object
+     responseSignalStrength(Parcel p) {
+         // Assume this is gsm, but doesn't matter as ServiceStateTracker
+         // sets the proper value.
+-- 
+1.7.9.5
+
